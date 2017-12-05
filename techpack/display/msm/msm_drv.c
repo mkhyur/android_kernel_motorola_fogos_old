@@ -39,6 +39,7 @@
 
 #include <linux/of_address.h>
 #include <linux/kthread.h>
+#include <linux/workqueue.h>
 #include <uapi/linux/sched/types.h>
 #include <drm/drm_of.h>
 #include <drm/drm_auth.h>
@@ -68,6 +69,9 @@
 #define MSM_VERSION_PATCHLEVEL	0
 
 #define LASTCLOSE_TIMEOUT_MS	500
+
+#define IDLE_ENCODER_MASK_DEFAULT	2
+#define IDLE_TIMEOUT_MS_DEFAULT		100
 
 #define msm_wait_event_timeout(waitq, cond, timeout_ms, ret)		\
 	do {								\
@@ -815,6 +819,8 @@ static int msm_drm_device_init(struct platform_device *pdev,
 		dev_err(dev, "failed to init sde dbg: %d\n", ret);
 		goto dbg_init_fail;
 	}
+
+	msm_idle_init(ddev);
 
 	pm_runtime_enable(dev);
 
