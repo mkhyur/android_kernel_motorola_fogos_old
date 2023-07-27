@@ -60,6 +60,7 @@ int __init kernelsu_init(void)
 #ifdef CONFIG_KSU_WITH_KPROBES
 	ksu_sucompat_init();
 	ksu_ksud_init();
+#endif
 
 #ifdef MODULE
 #ifndef CONFIG_KSU_DEBUG
