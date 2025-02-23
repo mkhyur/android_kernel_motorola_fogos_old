@@ -57,6 +57,7 @@ int __init kernelsu_init(void)
 
 	ksu_throne_tracker_init();
 
+#ifdef CONFIG_KSU_WITH_KPROBES
 	ksu_sucompat_init();
 	ksu_ksud_init();
 
@@ -76,6 +77,7 @@ void kernelsu_exit(void)
 
 	destroy_workqueue(ksu_workqueue);
 
+#ifdef CONFIG_KSU_WITH_KPROBES
 	ksu_ksud_exit();
 	ksu_sucompat_exit();
 
