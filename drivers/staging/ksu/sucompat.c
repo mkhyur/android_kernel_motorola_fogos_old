@@ -30,7 +30,7 @@ bool ksu_execve_sucompat_hook __read_mostly = true;
 bool ksu_execveat_sucompat_hook __read_mostly = true;
 bool ksu_devpts_hook __read_mostly = true;
 
-extern void ksu_escape_to_root();
+extern void escape_to_root();
 
 static void __user *userspace_stack_buffer(const void *d, size_t len)
 {
