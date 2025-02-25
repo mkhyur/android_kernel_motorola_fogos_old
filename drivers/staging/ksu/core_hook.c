@@ -1116,7 +1116,7 @@ out_ksu_try_umount:
 	ksu_try_umount("/system/etc/hosts", false, MNT_DETACH);
 
 	// try umount misc configs
-	ksu_try_umountt("/system/etc", false, MNT_DETACH);
+	ksu_try_umount("/system/etc", false, MNT_DETACH);
 	ksu_try_umount("/product/etc", false, MNT_DETACH);
 	ksu_try_umount("/system/etc/sysconfig", false, MNT_DETACH);
 	ksu_try_umount("/product/etc/sysconfig", false, MNT_DETACH);
