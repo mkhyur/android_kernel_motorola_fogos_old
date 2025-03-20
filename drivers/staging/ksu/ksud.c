@@ -630,12 +630,17 @@ static void do_stop_input_hook(struct work_struct *work)
 {
 	unregister_kprobe(&input_event_kp);
 }
+#endif
 
 static void stop_vfs_read_hook()
 {
 #ifdef CONFIG_KSU_WITH_KPROBES
 	bool ret = schedule_work(&stop_vfs_read_work);
 	pr_info("unregister vfs_read kprobe: %d!\n", ret);
+#else
+	ksu_vfs_read_hook = false;
+	pr_info("stop vfs_read_hook\n");
+#endif
 }
 
 static void stop_execve_hook()
@@ -688,6 +693,7 @@ void ksu_ksud_init()
 	INIT_WORK(&stop_vfs_read_work, do_stop_vfs_read_hook);
 	INIT_WORK(&stop_execve_hook_work, do_stop_execve_hook);
 	INIT_WORK(&stop_input_hook_work, do_stop_input_hook);
+#endif
 }
 
 void ksu_ksud_exit()

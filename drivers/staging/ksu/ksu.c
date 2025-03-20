@@ -89,7 +89,7 @@ void ksu_kernelsu_exit(void)
 #ifdef CONFIG_KSU_WITH_KPROBES
 	ksu_ksud_exit();
 	ksu_sucompat_exit();
-
+#endif
 	ksu_core_exit();
 }
 

@@ -1428,4 +1428,5 @@ void ksu_core_exit(void)
 	pr_info("ksu_core_kprobe_exit\n");
 	// we dont use this now
 	// ksu_kprobe_exit();
+#endif
 }
