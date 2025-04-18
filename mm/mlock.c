@@ -115,7 +115,7 @@ static bool __munlock_isolate_lru_page(struct page *page, bool getpage)
 		if (getpage)
 			get_page(page);
 		ClearPageLRU(page);
-		del_page_from_lru_list(page, lruvec, page_lru(page));
+		del_page_from_lru_list(page, lruvec);
 		return true;
 	}
 
@@ -573,7 +573,7 @@ success:
 	 */
 	if (lock) {
 		vm_write_begin(vma);
-		WRITE_ONCE(vma->vm_flags, newflags);
+		WRITE_ONCE(vma->vm_flags, vma_pad_fixup_flags(vma, newflags));
 		vm_write_end(vma);
 	} else
 		munlock_vma_pages_range(vma, start, end);

@@ -15,6 +15,10 @@ focaltech_v3-objs += focaltech_test/focaltech_test_ini.o
 focaltech_v3-objs += focaltech_test/supported_ic/focaltech_test_ft3681.o
 focaltech_v3-objs += focaltech_ts_config.o
 
+ifneq ($(filter m y, $(CONFIG_BOARD_USES_DOUBLE_TAP_CTRL)),)
+	EXTRA_CFLAGS += -DCONFIG_BOARD_USES_DOUBLE_TAP_CTRL
+endif
+
 ifneq ($(filter ft3681,$(CONFIG_INPUT_FOCALTECH_V3_MMI_IC_NAME)),)
 	ccflags-y += -DCONFIG_INPUT_FOCALTECH_V3_MMI_IC_NAME_FT3681
 endif
@@ -57,3 +61,6 @@ ifneq ($(filter m y,$(CONFIG_FTS_LAST_TIME)),)
 endif
 
 ccflags-y += -DPRODUCT_BANGKK
+
+KBUILD_EXTRA_SYMBOLS += $(CURDIR)/$(KBUILD_EXTMOD)/../touchscreen_mmi/$(GKI_OBJ_MODULE_DIR)/Module.symvers
+KBUILD_EXTRA_SYMBOLS += $(CURDIR)/$(KBUILD_EXTMOD)/../../../mmi_info/$(GKI_OBJ_MODULE_DIR)/Module.symvers

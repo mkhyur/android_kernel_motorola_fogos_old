@@ -176,14 +176,6 @@ static void mnt_free_id(struct mount *mnt)
 	ida_free(&mnt_id_ida, mnt->mnt_id);
 }
 
-#ifdef CONFIG_KSU_SUSFS_SUS_MOUNT
-static void susfs_mnt_alloc_group_id(struct mount *mnt)
-{
-	// Just assign the same default sus mount_group_id to mnt->mnt_group_id
-	mnt->mnt_group_id = DEFAULT_SUS_MNT_GROUP_ID;
-}
-#endif
-
 /*
  * Allocate a new peer group ID
  */
@@ -2176,17 +2168,6 @@ static void cleanup_group_ids(struct mount *mnt, struct mount *end)
 static int invent_group_ids(struct mount *mnt, bool recurse)
 {
 	struct mount *p;
-
-#ifdef CONFIG_KSU_SUSFS_SUS_MOUNT
-	if (susfs_is_current_ksu_domain()) {
-		for (p = mnt; p; p = recurse ? next_mnt(p, mnt) : NULL) {
-			if (!p->mnt_group_id && !IS_MNT_SHARED(p)) {
-				susfs_mnt_alloc_group_id(p);
-			}
-		}
-		return 0;
-	}
-#endif
 
 	for (p = mnt; p; p = recurse ? next_mnt(p, mnt) : NULL) {
 		if (!p->mnt_group_id && !IS_MNT_SHARED(p)) {

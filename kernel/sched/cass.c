@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0
 /*
- * Copyright (C) 2023 Sultan Alsawaf <sultan@kerneltoast.com>.
+ * Copyright (C) 2023-2024 Sultan Alsawaf <sultan@kerneltoast.com>.
  */
 
 /**
@@ -94,8 +94,7 @@ done:
 int cass_best_cpu(struct task_struct *p, int prev_cpu, bool sync)
 {
 	/* Initialize @best such that @best always has a valid CPU at the end */
-	struct cass_cpu_cand cands[2], *best = cands, *curr;
-	struct cpuidle_state *idle_state;
+	struct cass_cpu_cand cands[2], *best = cands;
 	bool has_idle = false;
 	unsigned long p_util;
 	int cidx = 0, cpu;
@@ -110,23 +109,28 @@ int cass_best_cpu(struct task_struct *p, int prev_cpu, bool sync)
 	 * an RCU read lock, an RCU read lock isn't needed because we're not
 	 * preemptible and RCU-sched is unified with normal RCU. Therefore,
 	 * non-preemptible contexts are implicitly RCU-safe.
+	 *
+	 * Note: @curr->cpu must be initialized before this loop ends. This is
+	 * necessary to ensure @best->cpu contains a valid CPU upon returning;
+	 * otherwise, if only one CPU is allowed and it is skipped before
+	 * @curr->cpu is set, then @best->cpu will be garbage.
 	 */
 	for_each_cpu_and(cpu, p->cpus_ptr, cpu_active_mask) {
-		/* Use the free candidate slot */
-		curr = &cands[cidx];
-		curr->cpu = cpu;
+		/* Use the free candidate slot for @curr */
+		struct cass_cpu_cand *curr = &cands[cidx];
+		struct cpuidle_state *idle_state;
+		struct rq *rq = cpu_rq(cpu);
 
 		/*
 		 * Check if this CPU is idle or only has SCHED_IDLE tasks. For
-		 * sync wakes, always treat the current CPU as idle.
+		 * sync wakes, treat the current CPU as idle if @current is the
+		 * only running task.
 		 */
-		if ((sync && cpu == smp_processor_id()) ||
+		if ((sync && cpu == smp_processor_id() && rq->nr_running == 1) ||
 		    available_idle_cpu(cpu) || sched_idle_cpu(cpu)) {
 			/* Discard any previous non-idle candidate */
-			if (!has_idle) {
+			if (!has_idle)
 				best = curr;
-				cidx ^= 1;
-			}
 			has_idle = true;
 
 			/* Nonzero exit latency indicates this CPU is idle */
@@ -165,12 +169,14 @@ int cass_best_cpu(struct task_struct *p, int prev_cpu, bool sync)
 		/* Calculate the relative utilization for this CPU candidate */
 		curr->util = curr->util * SCHED_CAPACITY_SCALE / curr->cap;
 
-		/* If @best == @curr then there's no need to compare them */
-		if (best == curr)
-			continue;
-
-		/* Check if this CPU is better than the best CPU found */
-		if (cass_cpu_better(curr, best, prev_cpu, sync)) {
+		/*
+		 * Check if this CPU is better than the best CPU found so far.
+		 * If @best == @curr then there's no need to compare them, but
+		 * cidx still needs to be changed to the other candidate slot.
+		 */
+		curr->cpu = cpu;
+		if (best == curr ||
+		    cass_cpu_better(curr, best, prev_cpu, sync)) {
 			best = curr;
 			cidx ^= 1;
 		}
