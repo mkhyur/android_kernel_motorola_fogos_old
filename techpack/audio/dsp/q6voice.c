@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
  * Copyright (c) 2012-2021, The Linux Foundation. All rights reserved.
- * Copyright (c) 2022-2024, Qualcomm Innovation Center, Inc. All rights reserved.
+ * Copyright (c) 2022-2023, Qualcomm Innovation Center, Inc. All rights reserved.
+ * Copyright (c) 2024, Qualcomm Innovation Center, Inc. All rights reserved.
  */
 #include <linux/slab.h>
 #include <linux/kthread.h>
@@ -3322,6 +3323,13 @@ static int voice_send_cvp_register_cal_cmd(struct voice_data *v)
 		 voc_get_session_name(v->session_id), v->dev_tx.dev_id,
 		 v->dev_rx.dev_id);
 
+	if (col_data->cal_data.size >= MAX_COL_INFO_SIZE) {
+		pr_err("%s: Invalid cal data size %d!\n",
+			__func__, col_data->cal_data.size);
+		ret = -EINVAL;
+		goto unlock;
+	}
+
 	memcpy(&cvp_reg_cal_cmd.cvp_cal_data.column_info[0],
 	       (void *) &((struct audio_cal_info_voc_col *)
 	       col_data->cal_info)->data,
@@ -3516,6 +3524,13 @@ static int voice_send_cvp_register_vol_cal_cmd(struct voice_data *v)
 		pr_err("%s: Voice_get_cal failed for cal %d!\n",
 			__func__, CVP_VOCVOL_CAL);
 
+		goto unlock;
+	}
+
+	if (col_data->cal_data.size >= MAX_COL_INFO_SIZE) {
+		pr_err("%s: Invalid cal data size %d!\n",
+			__func__, col_data->cal_data.size);
+		ret = -EINVAL;
 		goto unlock;
 	}
 
