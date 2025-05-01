@@ -82,7 +82,6 @@
 #include <trace/hooks/sys.h>
 
 #include <linux/string_helpers.h> 
-#define MOD_KERNEL_VERSION "5.4.293-qgki"
 
 #ifndef SET_UNALIGN_CTL
 # define SET_UNALIGN_CTL(a, b)	(-EINVAL)
@@ -1231,8 +1230,8 @@ static void override_custom_release(char __user *release, size_t len)
      if (buf == NULL)
          return;
  
-     if (strncmp(buf, "com.google.android.gms", 22) == 0) {
-             copy_to_user(release, MOD_KERNEL_VERSION, strlen(MOD_KERNEL_VERSION));
+     if (strncmp(buf, CONFIG_UNAME_OVERRIDE_TARGET, 22) == 0) {
+             copy_to_user(release, CONFIG_UNAME_OVERRIDE_STRING, strlen(CONFIG_UNAME_OVERRIDE_STRING) + 1);
      }
 #ifdef CONFIG_KSU
         if (strstr(buf, "me.weishu.kernelsu")) {
