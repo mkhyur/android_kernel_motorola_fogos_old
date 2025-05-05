@@ -81,6 +81,8 @@
 
 #include <trace/hooks/sys.h>
 
+#include <linux/string_helpers.h> 
+
 #ifndef SET_UNALIGN_CTL
 # define SET_UNALIGN_CTL(a, b)	(-EINVAL)
 #endif
@@ -1212,38 +1214,38 @@ DECLARE_RWSEM(uts_sem);
 #define override_architecture(name)	0
 #endif
 
-#ifdef CONFIG_UNAME_OVERRIDE
-static void override_custom_release(char __user *release, size_t len)
-{
-	char *buf;
-
-	buf = kstrdup_quotable_cmdline(current, GFP_KERNEL);
-	if (buf == NULL)
-		return;
-
-	if (strstr(buf, CONFIG_UNAME_OVERRIDE_TARGET)) {
-		copy_to_user(release, CONFIG_UNAME_OVERRIDE_STRING,
-			       strlen(CONFIG_UNAME_OVERRIDE_STRING) + 1);
-	}
-#ifdef CONFIG_KSU	
-	if (strstr(buf, "me.weishu.kernelsu")) {
-		char easteregg[50];
-		strcpy(easteregg, UTS_RELEASE);
-		strcat(easteregg, " +moefsニャン");
-		copy_to_user(release, easteregg,
-			       strlen(easteregg) + 1);
-	}
-#endif	
-	kfree(buf);
-}
-#endif
-
 /*
  * Work around broken programs that cannot handle "Linux 3.0".
  * Instead we map 3.x to 2.6.40+x, so e.g. 3.0 would be 2.6.40
  * And we map 4.x and later versions to 2.6.60+x, so 4.0/5.0/6.0/... would be
  * 2.6.60.
  */
+
+#ifdef CONFIG_UNAME_OVERRIDE
+static void override_custom_release(char __user *release, size_t len)
+{
+     char *buf;
+ 
+     buf = kstrdup_quotable_cmdline(current, GFP_KERNEL);
+     if (buf == NULL)
+         return;
+ 
+     if (strncmp(buf, CONFIG_UNAME_OVERRIDE_TARGET, 22) == 0) {
+             copy_to_user(release, CONFIG_UNAME_OVERRIDE_STRING, strlen(CONFIG_UNAME_OVERRIDE_STRING) + 1);
+     }
+#ifdef CONFIG_KSU
+        if (strstr(buf, "me.weishu.kernelsu")) {
+                char easteregg[50];
+                strcpy(easteregg, UTS_RELEASE);
+                strcat(easteregg, " +moefsニャン");
+                copy_to_user(release, easteregg,
+                               strlen(easteregg) + 1);
+        }
+#endif
+     kfree(buf);
+}
+#endif
+
 static int override_release(char __user *release, size_t len)
 {
 	int ret = 0;
@@ -1276,6 +1278,8 @@ extern void susfs_spoof_uname(struct new_utsname* tmp);
 SYSCALL_DEFINE1(newuname, struct new_utsname __user *, name)
 {
 	struct new_utsname tmp;
+	struct task_struct *t;
+	bool is_gms = false;
 
 	down_read(&uts_sem);
 	memcpy(&tmp, utsname(), sizeof(tmp));
@@ -1283,6 +1287,22 @@ SYSCALL_DEFINE1(newuname, struct new_utsname __user *, name)
 	susfs_spoof_uname(&tmp);
 #endif
 	up_read(&uts_sem);
+
+	rcu_read_lock();
+	for_each_thread(current, t) {
+		if (thread_group_leader(t)) {
+			is_gms = !strcmp(t->comm, "id.gms.unstable");
+			break;
+		}
+	}
+	rcu_read_unlock();
+
+	if (is_gms)
+		snprintf(tmp.release, sizeof(tmp.release), "%u.%u.%u",
+			 (u8)(LINUX_VERSION_CODE >> 16),
+			 (u8)(LINUX_VERSION_CODE >> 8),
+			 LINUX_VERSION_CODE & 0xffff);
+
 	if (copy_to_user(name, &tmp, sizeof(tmp)))
 		return -EFAULT;
 #ifdef CONFIG_UNAME_OVERRIDE	
