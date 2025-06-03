@@ -667,7 +667,7 @@ static void avc_audit_pre_callback(struct audit_buffer *ab, void *a)
 	const char **perms;
 	int i, perm;
 
-	audit_log_format(ab, "avc:  %s ", sad->denied ? "denied" : "granted");
+	audit_log_format(ab, "avc:  denied ");
 
 	if (av == 0) {
 		audit_log_format(ab, " null");
@@ -728,8 +728,7 @@ static void avc_audit_post_callback(struct audit_buffer *ab, void *a)
 
 	audit_log_format(ab, " tclass=%s", secclass_map[sad->tclass-1].name);
 
-	if (sad->denied)
-		audit_log_format(ab, " permissive=%u", sad->result ? 0 : 1);
+	audit_log_format(ab, " permissive=%u", sad->result ? 0 : 1);
 
 	/* in case of invalid context report also the actual context string */
 	rc = security_sid_to_context_inval(sad->state, sad->ssid, &scontext,
@@ -762,6 +761,9 @@ noinline int slow_avc_audit(struct selinux_state *state,
 	struct common_audit_data stack_data;
 	struct selinux_audit_data sad;
 
+	if (!denied)
+		return 0;
+
 	if (WARN_ON(!tclass || tclass >= ARRAY_SIZE(secclass_map)))
 		return -EINVAL;
 
@@ -775,7 +777,6 @@ noinline int slow_avc_audit(struct selinux_state *state,
 	sad.ssid = ssid;
 	sad.tsid = tsid;
 	sad.audited = audited;
-	sad.denied = denied;
 	sad.result = result;
 	sad.state = state;
 
@@ -1178,7 +1179,7 @@ inline int avc_has_perm_noaudit(struct selinux_state *state,
 int avc_has_perm(struct selinux_state *state, u32 ssid, u32 tsid, u16 tclass,
 		 u32 requested, struct common_audit_data *auditdata)
 {
-	struct av_decision avd;
+	struct av_decision avd = { .auditdeny = 0xffffffff };
 	int rc, rc2;
 
 	rc = avc_has_perm_noaudit(state, ssid, tsid, tclass, requested, 0,
@@ -1196,7 +1197,7 @@ int avc_has_perm_flags(struct selinux_state *state,
 		       struct common_audit_data *auditdata,
 		       int flags)
 {
-	struct av_decision avd;
+	struct av_decision avd = { .auditdeny = 0xffffffff };
 	int rc, rc2;
 
 	rc = avc_has_perm_noaudit(state, ssid, tsid, tclass, requested,

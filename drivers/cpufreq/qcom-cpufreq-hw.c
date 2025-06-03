@@ -31,7 +31,7 @@
 #define CLK_HW_DIV			2
 #define GT_IRQ_STATUS			BIT(2)
 #define MAX_FN_SIZE			20
-#define LIMITS_POLLING_DELAY_MS		4
+#define LIMITS_POLLING_DELAY_MS		1
 #define MAX_ROW				2
 
 #define CYCLE_CNTR_OFFSET(core_id, m, acc_count)				\
@@ -437,7 +437,7 @@ static int qcom_cpufreq_hw_read_lut(struct platform_device *pdev,
 				    struct cpufreq_qcom *c, u32 max_cores)
 {
 	struct device *dev = &pdev->dev, *cpu_dev;
-	u32 data, src, lval, i, core_count, prev_cc, prev_freq, freq, volt;
+	u32 data, src, lval, i, core_count, prev_cc, prev_freq = 0, freq, volt;
 	unsigned long cpu;
 
 	c->table = devm_kcalloc(dev, lut_max_entries + 1,

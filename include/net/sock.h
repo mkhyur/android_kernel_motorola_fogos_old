@@ -844,6 +844,7 @@ enum sock_flags {
 	SOCK_TXTIME,
 	SOCK_XDP, /* XDP is attached */
 	SOCK_TSTAMP_NEW, /* Indicates 64 bit timestamps always */
+	SOCK_MPTCP, /* MPTCP set on this socket */
 };
 
 #define SK_FLAGS_TIMESTAMP ((1UL << SOCK_TIMESTAMP) | (1UL << SOCK_TIMESTAMPING_RX_SOFTWARE))
@@ -1164,6 +1165,7 @@ struct proto {
 	void			(*unhash)(struct sock *sk);
 	void			(*rehash)(struct sock *sk);
 	int			(*get_port)(struct sock *sk, unsigned short snum);
+	void			(*clear_sk)(struct sock *sk, int size);
 
 	/* Keeping track of sockets in use */
 #ifdef CONFIG_PROC_FS
@@ -1579,12 +1581,26 @@ static inline void lock_sock(struct sock *sk)
 void __release_sock(struct sock *sk);
 void release_sock(struct sock *sk);
 
+#ifdef CONFIG_MPTCP_DEBUG_LOCK
+extern void mptcp_check_lock(struct sock* sk);
+#endif
+static inline void lock_sock_check_mptcp(struct sock* sk)
+{
+#ifdef CONFIG_MPTCP_DEBUG_LOCK
+	if (sk && sk->sk_type == SOCK_STREAM && sk->sk_protocol == IPPROTO_TCP)
+		mptcp_check_lock(sk);
+#endif
+}
+
 /* BH context may only use the following locking interface. */
-#define bh_lock_sock(__sk)	spin_lock(&((__sk)->sk_lock.slock))
-#define bh_lock_sock_nested(__sk) \
+#define bh_lock_sock(__sk)	do { lock_sock_check_mptcp(__sk); \
+				spin_lock(&((__sk)->sk_lock.slock)); } while (0)
+#define bh_lock_sock_nested(__sk) do { \
+				lock_sock_check_mptcp(__sk); \
 				spin_lock_nested(&((__sk)->sk_lock.slock), \
-				SINGLE_DEPTH_NESTING)
-#define bh_unlock_sock(__sk)	spin_unlock(&((__sk)->sk_lock.slock))
+				SINGLE_DEPTH_NESTING); } while (0)
+#define bh_unlock_sock(__sk)	do { lock_sock_check_mptcp(__sk); \
+				spin_unlock(&((__sk)->sk_lock.slock)); } while (0)
 
 bool lock_sock_fast(struct sock *sk);
 /**
@@ -1929,10 +1945,13 @@ static inline void sk_set_txhash(struct sock *sk)
 	WRITE_ONCE(sk->sk_txhash, net_tx_rndhash());
 }
 
-static inline void sk_rethink_txhash(struct sock *sk)
+static inline bool sk_rethink_txhash(struct sock *sk)
 {
-	if (sk->sk_txhash)
+	if (sk->sk_txhash) {
 		sk_set_txhash(sk);
+		return true;
+	}
+	return false;
 }
 
 static inline struct dst_entry *
@@ -1955,7 +1974,7 @@ sk_dst_get(struct sock *sk)
 	return dst;
 }
 
-static inline void dst_negative_advice(struct sock *sk)
+static inline void __dst_negative_advice(struct sock *sk)
 {
 	/* *** ANDROID FIXUP ***
 	 * See b/343727534 for more details why this typedef is needed here.
@@ -1965,12 +1984,16 @@ static inline void dst_negative_advice(struct sock *sk)
 
 	struct dst_entry *dst = __sk_dst_get(sk);
 
-	sk_rethink_txhash(sk);
-
 	if (dst && dst->ops->negative_advice) {
 		negative_advice = (android_dst_ops_negative_advice_new_t)dst->ops->negative_advice;
 		negative_advice(sk, dst);
 	}
+}
+
+static inline void dst_negative_advice(struct sock *sk)
+{
+	sk_rethink_txhash(sk);
+	__dst_negative_advice(sk);
 }
 
 static inline void

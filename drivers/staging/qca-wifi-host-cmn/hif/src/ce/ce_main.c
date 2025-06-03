@@ -944,8 +944,8 @@ static void hif_select_service_to_pipe_map(struct hif_softc *scn,
  */
 static bool ce_mark_datapath(struct CE_state *ce_state)
 {
-	struct service_to_pipe *svc_map;
-	uint32_t map_sz, map_len;
+	struct service_to_pipe *svc_map = NULL;
+	uint32_t map_sz = 0, map_len;
 	int    i;
 	bool   rc = false;
 
@@ -2574,6 +2574,11 @@ QDF_STATUS hif_post_recv_buffers_for_pipe(struct HIF_CE_pipe_info *pipe_info)
 	}
 
 	ce_hdl = pipe_info->ce_hdl;
+	if (!ce_hdl) {
+		hif_err("ce_hdl is NULL");
+		return QDF_STATUS_E_INVAL;
+	}
+
 	ce_id = ((struct CE_state *)ce_hdl)->id;
 
 	qdf_spin_lock_bh(&pipe_info->recv_bufs_needed_lock);

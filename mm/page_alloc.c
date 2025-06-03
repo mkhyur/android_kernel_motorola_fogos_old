@@ -325,22 +325,8 @@ compound_page_dtor * const compound_page_dtors[] = {
  */
 int min_free_kbytes = 1024;
 int user_min_free_kbytes = -1;
-#ifdef CONFIG_DISCONTIGMEM
-/*
- * DiscontigMem defines memory ranges as separate pg_data_t even if the ranges
- * are not on separate NUMA nodes. Functionally this works but with
- * watermark_boost_factor, it can reclaim prematurely as the ranges can be
- * quite small. By default, do not boost watermarks on discontigmem as in
- * many cases very high-order allocations like THP are likely to be
- * unsupported and the premature reclaim offsets the advantage of long-term
- * fragmentation avoidance.
- */
 int watermark_boost_factor __read_mostly;
-#else
-/* Moto huangzq2: Disable watermark boost as it's not working fine on kernel 4.19 */
-int watermark_boost_factor __read_mostly = 0;
-#endif
-int watermark_scale_factor = 10;
+int watermark_scale_factor = 15;
 
 /*
  * Extra memory for the system to try freeing. Used to temporarily
@@ -3374,7 +3360,7 @@ struct page *rmqueue(struct zone *preferred_zone,
 			gfp_t gfp_flags, unsigned int alloc_flags,
 			int migratetype)
 {
-	unsigned long flags;
+	unsigned long flags = 0;
 	struct page *page;
 
 	if (likely(order == 0)) {

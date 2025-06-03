@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
  * Copyright (c) 2002,2007-2021, The Linux Foundation. All rights reserved.
- * Copyright (c) 2022 Qualcomm Innovation Center, Inc. All rights reserved.
  */
 #include <linux/component.h>
 #include <linux/delay.h>
@@ -406,29 +405,8 @@ static void adreno_input_event(struct input_handle *handle, unsigned int type,
 	if (device->flags & KGSL_FLAG_WAKE_ON_TOUCH)
 		return;
 
-	if (gmu_core_isenabled(device)) {
+	if (gmu_core_isenabled(device) || (device->state == KGSL_STATE_SLUMBER))
 		schedule_work(&adreno_dev->input_work);
-		return;
-	}
-
-	/*
-	 * If the device is in nap, kick the idle timer to make sure that we
-	 * don't go into slumber before the first render. If the device is
-	 * already in slumber schedule the wake.
-	 */
-
-	if (device->state == KGSL_STATE_NAP) {
-		/*
-		 * Set the wake on touch bit to keep from coming back here and
-		 * keeping the device in nap without rendering
-		 */
-
-		device->flags |= KGSL_FLAG_WAKE_ON_TOUCH;
-		kgsl_start_idle_timer(device);
-
-	} else if (device->state == KGSL_STATE_SLUMBER) {
-		schedule_work(&adreno_dev->input_work);
-	}
 }
 
 #ifdef CONFIG_INPUT
@@ -1085,8 +1063,6 @@ static int adreno_of_get_power(struct adreno_device *adreno_dev,
 	l3_pwrlevel_probe(device, pdev->dev.of_node);
 
 	device->pwrctrl.interval_timeout = CONFIG_QCOM_KGSL_IDLE_TIMEOUT;
-
-	device->pwrctrl.minbw_timeout = 10;
 
 	/* Set default bus control to true on all targets */
 	device->pwrctrl.bus_control = true;
@@ -2007,16 +1983,8 @@ static void adreno_pwrctrl_active_count_put(struct adreno_device *adreno_dev)
 		return;
 
 	if (atomic_dec_and_test(&device->active_cnt)) {
-		bool nap_on = !(device->pwrctrl.ctrl_flags &
-			BIT(KGSL_PWRFLAGS_NAP_OFF));
-		if (nap_on && device->state == KGSL_STATE_ACTIVE &&
-			device->requested_state == KGSL_STATE_NONE) {
-			kgsl_pwrctrl_request_state(device, KGSL_STATE_NAP);
-			kgsl_schedule_work(&device->idle_check_ws);
-		} else if (!nap_on) {
-			kgsl_pwrscale_update_stats(device);
-			kgsl_pwrscale_update(device);
-		}
+		kgsl_pwrscale_update_stats(device);
+		kgsl_pwrscale_update(device);
 
 		kgsl_start_idle_timer(device);
 	}
@@ -2342,8 +2310,6 @@ int adreno_reset(struct kgsl_device *device, int fault)
 
 	if (atomic_read(&device->active_cnt))
 		kgsl_pwrctrl_change_state(device, KGSL_STATE_ACTIVE);
-	else
-		kgsl_pwrctrl_change_state(device, KGSL_STATE_NAP);
 
 	return ret;
 }
@@ -3135,14 +3101,12 @@ int adreno_gmu_fenced_write(struct adreno_device *adreno_dev,
 	unsigned int status, i;
 	const struct adreno_gpudev *gpudev = ADRENO_GPU_DEVICE(adreno_dev);
 	unsigned int reg_offset = gpudev->reg_offsets[offset];
-	u64 ts1, ts2;
 
 	adreno_writereg(adreno_dev, offset, val);
 
 	if (!gmu_core_isenabled(KGSL_DEVICE(adreno_dev)))
 		return 0;
 
-	ts1 = gpudev->read_alwayson(adreno_dev);
 	for (i = 0; i < GMU_CORE_LONG_WAKEUP_RETRY_LIMIT; i++) {
 		/*
 		 * Make sure the previous register write is posted before
@@ -3171,10 +3135,10 @@ int adreno_gmu_fenced_write(struct adreno_device *adreno_dev,
 		return 0;
 
 	if (i == GMU_CORE_LONG_WAKEUP_RETRY_LIMIT) {
-		ts2 = gpudev->read_alwayson(adreno_dev);
 		dev_err(adreno_dev->dev.dev,
-			"Timed out waiting %d usecs to write fenced register 0x%x, timestamps: %llx %llx\n",
-			i * GMU_CORE_WAKEUP_DELAY_US, reg_offset, ts1, ts2);
+			"Timed out waiting %d usecs to write fenced register 0x%x\n",
+			i * GMU_CORE_WAKEUP_DELAY_US,
+			reg_offset);
 		return -ETIMEDOUT;
 	}
 
@@ -3720,14 +3684,6 @@ static void adreno_pwrlevel_change_settings(struct kgsl_device *device,
 					postlevel, post);
 }
 
-static void adreno_clk_set_options(struct kgsl_device *device, const char *name,
-	struct clk *clk, bool on)
-{
-	if (ADRENO_GPU_DEVICE(ADRENO_DEVICE(device))->clk_set_options)
-		ADRENO_GPU_DEVICE(ADRENO_DEVICE(device))->clk_set_options(
-			ADRENO_DEVICE(device), name, clk, on);
-}
-
 static void adreno_regulator_disable_poll(struct kgsl_device *device)
 {
 	struct kgsl_pwrctrl *pwr = &device->pwrctrl;
@@ -3938,7 +3894,6 @@ static const struct kgsl_functable adreno_functable = {
 	.regulator_disable = adreno_regulator_disable,
 	.pwrlevel_change_settings = adreno_pwrlevel_change_settings,
 	.regulator_disable_poll = adreno_regulator_disable_poll,
-	.clk_set_options = adreno_clk_set_options,
 	.gpu_model = adreno_gpu_model,
 	.query_property_list = adreno_query_property_list,
 	.is_hwcg_on = adreno_is_hwcg_on,

@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-2.0-only */
 /*
- * Copyright (c) 2011-2021, The Linux Foundation. All rights reserved.
+ * Copyright (c) 2011-2020, The Linux Foundation. All rights reserved.
  */
 
 #if !defined(_KGSL_TRACE_H) || defined(TRACE_HEADER_MULTI_READ)
@@ -286,26 +286,6 @@ TRACE_EVENT(kgsl_pwrlevel,
 		__entry->prev_pwrlevel,
 		__entry->prev_freq
 	)
-);
-
-/*
- * Tracepoint for kgsl gpu_frequency
- */
-TRACE_EVENT(gpu_frequency,
-	TP_PROTO(unsigned int gpu_freq, unsigned int gpu_id),
-	TP_ARGS(gpu_freq, gpu_id),
-	TP_STRUCT__entry(
-		__field(unsigned int, gpu_freq)
-		__field(unsigned int, gpu_id)
-	),
-	TP_fast_assign(
-		__entry->gpu_freq = gpu_freq;
-		__entry->gpu_id = gpu_id;
-	),
-
-	TP_printk("gpu_freq=%luKhz gpu_id=%lu",
-		(unsigned long)__entry->gpu_freq,
-		(unsigned long)__entry->gpu_id)
 );
 
 TRACE_EVENT(kgsl_buslevel,
@@ -1335,80 +1315,6 @@ TRACE_EVENT(kgsl_drawobj_timeline,
 	),
 	TP_printk("timeline=%u seqno=%llu",
 		__entry->timeline, __entry->seqno
-	)
-);
-
-TRACE_EVENT(kgsl_pool_add_page,
-	TP_PROTO(int order, u32 count),
-	TP_ARGS(order, count),
-	TP_STRUCT__entry(
-		__field(int, order)
-		__field(u32, count)
-	),
-	TP_fast_assign(
-		__entry->order = order;
-		__entry->count = count;
-	),
-	TP_printk("order=%d count=%u",
-		__entry->order, __entry->count
-	)
-);
-
-TRACE_EVENT(kgsl_pool_get_page,
-	TP_PROTO(int order, u32 count),
-	TP_ARGS(order, count),
-	TP_STRUCT__entry(
-		__field(int, order)
-		__field(u32, count)
-	),
-	TP_fast_assign(
-		__entry->order = order;
-		__entry->count = count;
-	),
-	TP_printk("order=%d count=%u",
-		__entry->order, __entry->count
-	)
-);
-
-TRACE_EVENT(kgsl_pool_alloc_page_system,
-	TP_PROTO(int order),
-	TP_ARGS(order),
-	TP_STRUCT__entry(
-		__field(int, order)
-	),
-	TP_fast_assign(
-		__entry->order = order;
-	),
-	TP_printk("order=%d",
-		__entry->order
-	)
-);
-
-TRACE_EVENT(kgsl_pool_try_page_lower,
-	TP_PROTO(int order),
-	TP_ARGS(order),
-	TP_STRUCT__entry(
-		__field(int, order)
-	),
-	TP_fast_assign(
-		__entry->order = order;
-	),
-	TP_printk("order=%d",
-		__entry->order
-	)
-);
-
-TRACE_EVENT(kgsl_pool_free_page,
-	TP_PROTO(int order),
-	TP_ARGS(order),
-	TP_STRUCT__entry(
-		__field(int, order)
-	),
-	TP_fast_assign(
-		__entry->order = order;
-	),
-	TP_printk("order=%d",
-		__entry->order
 	)
 );
 

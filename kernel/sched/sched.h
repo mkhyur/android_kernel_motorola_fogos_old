@@ -1614,13 +1614,13 @@ static inline void unregister_sched_domain_sysctl(void)
 
 extern int newidle_balance(struct rq *this_rq, struct rq_flags *rf);
 
-#else
+extern void flush_smp_call_function_from_idle(void);
 
+#else /* !CONFIG_SMP: */
+static inline void flush_smp_call_function_from_idle(void) { }
 static inline void sched_ttwu_pending(void) { }
-
 static inline int newidle_balance(struct rq *this_rq, struct rq_flags *rf) { return 0; }
-
-#endif /* CONFIG_SMP */
+#endif
 
 #include "stats.h"
 #include "autogroup.h"
@@ -3089,13 +3089,21 @@ static inline int same_freq_domain(int src_cpu, int dst_cpu)
 extern enum sched_boost_policy boost_policy;
 static inline enum sched_boost_policy sched_boost_policy(void)
 {
+#ifdef CONFIG_SCHED_WALT_ORIG
 	return boost_policy;
+#else
+	return SCHED_BOOST_NONE;
+#endif
 }
 
 extern unsigned int sched_boost_type;
 static inline int sched_boost(void)
 {
+#ifdef CONFIG_SCHED_WALT_ORIG
 	return sched_boost_type;
+#else
+	return NO_BOOST;
+#endif
 }
 
 static inline bool rt_boost_on_big(void)
@@ -3423,7 +3431,7 @@ extern struct task_struct *find_process_by_pid(pid_t pid);
 extern void enqueue_task_core(struct rq *rq, struct task_struct *p, int flags);
 extern void dequeue_task_core(struct rq *rq, struct task_struct *p, int flags);
 
-#if defined(CONFIG_SCHED_WALT) && defined(CONFIG_UCLAMP_TASK_GROUP)
+#if defined(CONFIG_SCHED_WALT_ORIG) && defined(CONFIG_SCHED_WALT) && defined(CONFIG_UCLAMP_TASK_GROUP)
 extern void walt_init_sched_boost(struct task_group *tg);
 #else
 static inline void walt_init_sched_boost(struct task_group *tg) {}

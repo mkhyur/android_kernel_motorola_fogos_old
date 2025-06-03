@@ -11976,6 +11976,9 @@ static void hdd_init_channel_avoidance(struct hdd_context *hdd_ctx)
 	unsafe_channel_count = QDF_MIN((uint16_t)hdd_ctx->unsafe_channel_count,
 				       (uint16_t)NUM_CHANNELS);
 
+	if (!unsafe_channel_count)
+		return;
+
 	unsafe_freq_list = qdf_mem_malloc(
 			unsafe_channel_count * sizeof(*unsafe_freq_list));
 
@@ -16800,6 +16803,9 @@ static void hdd_set_adapter_wlm_def_level(struct hdd_context *hdd_ctx)
 	QDF_STATUS qdf_status;
 	uint8_t latency_level;
 
+	if (QDF_GLOBAL_FTM_MODE == hdd_get_conparam())
+		return;
+
 	ret = wlan_hdd_validate_context(hdd_ctx);
 	if (ret != 0)
 		return;
@@ -17834,7 +17840,8 @@ pld_deinit:
 	QDF_BUG(QDF_IS_STATUS_SUCCESS(status));
 
 	osif_driver_sync_unregister();
-	osif_driver_sync_wait_for_ops(driver_sync);
+	if (driver_sync)
+		osif_driver_sync_wait_for_ops(driver_sync);
 
 	hdd_driver_mode_change_unregister();
 	pld_deinit();
@@ -17850,8 +17857,10 @@ comp_deinit:
 hdd_deinit:
 	hdd_deinit();
 trans_stop:
-	osif_driver_sync_trans_stop(driver_sync);
-	osif_driver_sync_destroy(driver_sync);
+	if (driver_sync) {
+		osif_driver_sync_trans_stop(driver_sync);
+		osif_driver_sync_destroy(driver_sync);
+	}
 sync_deinit:
 	osif_sync_deinit();
 	hdd_qdf_deinit();
@@ -18998,6 +19007,11 @@ int hdd_get_rssi_snr_by_bssid(struct hdd_adapter *adapter, const uint8_t *bssid,
 
 	roam_profile = hdd_roam_profile(adapter);
 	mac_handle = hdd_adapter_get_mac_handle(adapter);
+	if (!mac_handle) {
+		hdd_err("mac context NULL");
+		return -EINVAL;
+	}
+
 	status = sme_get_rssi_snr_by_bssid(mac_handle,
 					   roam_profile, bssid, rssi, snr,
 					   adapter->vdev_id);

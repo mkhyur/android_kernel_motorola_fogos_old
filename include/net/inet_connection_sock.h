@@ -25,6 +25,7 @@
 
 struct inet_bind_bucket;
 struct tcp_congestion_ops;
+struct tcp_options_received;
 
 /*
  * Pointers to address related TCP functions
@@ -152,8 +153,9 @@ struct inet_connection_sock {
 #endif
 	u32			  icsk_user_timeout;
 
-	u64			  icsk_ca_priv[104 / sizeof(u64)];
-#define ICSK_CA_PRIV_SIZE      (13 * sizeof(u64))
+/* XXX inflated by temporary internal debugging info */
+#define ICSK_CA_PRIV_SIZE      (144)
+	u64			  icsk_ca_priv[ICSK_CA_PRIV_SIZE / sizeof(u64)];
 };
 
 #define ICSK_TIME_RETRANS	1	/* Retransmit timer */

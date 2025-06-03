@@ -2843,6 +2843,10 @@
 			allocations which rules out almost all kernel
 			allocations. Use with caution!
 
+	mptcp_htable_entries=
+			[KNL,NET] Set number of hash buckets for MPTCP token
+			hashtables.
+
 	MTD_Partition=	[MTD]
 			Format: <name>,<region-number>,<size>,<offset>
 
@@ -3426,6 +3430,15 @@
 
 	panic_on_warn	panic() instead of WARN().  Useful to cause kdump
 			on a WARN().
+
+	pelt=		[KNL] Boot-time parameter changing the PELT half life in ms
+			Format: <int>
+			32: Set the half life to 32ms
+			16: Set the half life to 16ms
+			12: Set the half life to 12ms
+			10: Set the half life to 10ms
+			8: Set the half life to 8ms
+			default: 32
 
 	crash_kexec_post_notifiers
 			Run kdump after running panic-notifiers and dumping
