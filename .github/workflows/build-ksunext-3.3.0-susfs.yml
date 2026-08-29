@@ -1,4 +1,4 @@
-name: Build fogos KSUN 3.3.0 SUSFS - V4 Linux 5.4 fixes
+name: Build fogos KSUN 3.3.0 + SUSFS 2.2.0 - V5
 
 on:
   workflow_dispatch:
@@ -16,8 +16,10 @@ env:
   # Pinned so the build does not silently change in the future.
   KSU_COMMIT: 26fded805206ae4542f4745e09cc465412994492
   KSU_EXPECTED_TAG: v3.3.0
-  ZIP_PREFIX: Fogos-KSUNext-3.3.0-SUSFS
-  WORKFLOW_REV: v4-sulog-init-fix-20260829
+  SUSFS_PATCH_SHA: c25917a4f1c8c1475a8ba7c6f32e9f2bb2e31767
+  SUSFS_PATCH_URL: https://raw.githubusercontent.com/JackA1ltman/NonGKI_Kernel_Build_2nd/c25917a4f1c8c1475a8ba7c6f32e9f2bb2e31767/Patches/Patch/susfs_patch_to_5.4.patch
+  ZIP_PREFIX: Fogos-KSUNext-3.3.0-SUSFS-2.2.0
+  WORKFLOW_REV: v5-susfs220-backport-20260829
 
 jobs:
   build:
@@ -30,13 +32,13 @@ jobs:
         run: |
           set -euo pipefail
           echo "WORKFLOW_REV=$WORKFLOW_REV"
-          echo "This workflow DOES NOT apply the legacy 10_enable_susfs_for_ksu.patch."
-          test "$WORKFLOW_REV" = "v4-sulog-init-fix-20260829"
+          echo "This workflow removes fogos SUSFS 1.5.5 and applies a pinned SUSFS 2.2.0 Linux-5.4 backport. It DOES NOT apply the legacy KSU patch."
+          test "$WORKFLOW_REV" = "v5-susfs220-backport-20260829"
 
       - name: Checkout kernel
         uses: actions/checkout@v4
         with:
-          fetch-depth: 1
+          fetch-depth: 0
           submodules: recursive
 
       - name: Install dependencies
@@ -78,13 +80,90 @@ jobs:
           echo 'SUSFS:'
           grep 'SUSFS_VERSION' include/linux/susfs.h
 
-      - name: Remove old embedded KSU only
+      - name: Remove old SUSFS 1.5.5 integration
         shell: bash
         run: |
           set -euo pipefail
 
-          # Keep all SUSFS kernel-side changes already present in fs/, mm/,
-          # include/ and security/. Remove only the old embedded KSU driver.
+          # This tree accumulated SUSFS in three effective stages:
+          #   34ac1e3 -> v1.3.5 (initial import)
+          #   150204b -> v1.5.3
+          #   192782b -> v1.5.5
+          # The intermediate v1.4.2 import was reverted in the repository, so
+          # there is nothing extra to undo for that version. Revert newest to
+          # oldest so the current kernel keeps all unrelated Motorola/LTS work.
+          SUSFS_COMMITS=(192782b 150204b 34ac1e3)
+
+          for c in "${SUSFS_COMMITS[@]}"; do
+            git cat-file -e "$c^{commit}"
+            git merge-base --is-ancestor "$c" HEAD
+          done
+
+          for c in "${SUSFS_COMMITS[@]}"; do
+            echo "Reverting old SUSFS integration commit $c"
+            if ! git -c user.name='GitHub Actions' -c user.email='actions@github.com' \
+              revert --no-commit "$c"; then
+              echo "Old SUSFS revert failed at $c" >&2
+              git status --short >&2 || true
+              git diff --name-only --diff-filter=U >&2 || true
+              exit 1
+            fi
+          done
+
+          # Keep the reverse changes in the worktree, but do not leave the
+          # index staged; the modern patch is applied to this clean baseline.
+          git reset
+
+          if [ -f include/linux/susfs.h ]; then
+            if grep -q 'SUSFS_VERSION' include/linux/susfs.h; then
+              echo 'Old SUSFS was not completely removed' >&2
+              grep 'SUSFS_VERSION' include/linux/susfs.h >&2 || true
+              exit 1
+            fi
+          fi
+
+      - name: Apply pinned SUSFS 2.2.0 backport for Linux 5.4
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          curl -fL --retry 5 --retry-delay 3 "$SUSFS_PATCH_URL" -o /tmp/susfs-5.4-v2.2.0.patch
+
+          # Guard against a mutable/wrong download even though the URL is SHA-pinned.
+          grep -q '^+#define SUSFS_VERSION "v2.2.0"$' /tmp/susfs-5.4-v2.2.0.patch
+          grep -q 'susfs_is_current_proc_umounted(void)' /tmp/susfs-5.4-v2.2.0.patch
+          grep -q 'CONFIG_KSU_SUSFS_SUS_MAP' /tmp/susfs-5.4-v2.2.0.patch
+
+          # Dry-run first. patch(1) tolerates small vendor-context offsets but
+          # exits non-zero if any hunk cannot be placed. Never continue with a
+          # partially applied SUSFS tree.
+          patch --batch --forward --fuzz=3 --dry-run -p1 < /tmp/susfs-5.4-v2.2.0.patch \
+            2>&1 | tee susfs-patch-dry-run.log
+          patch --batch --forward --fuzz=3 -p1 < /tmp/susfs-5.4-v2.2.0.patch \
+            2>&1 | tee susfs-patch.log
+
+          if find . -name '*.rej' -print -quit | grep -q .; then
+            echo 'SUSFS patch produced reject files' >&2
+            find . -name '*.rej' -print >&2
+            exit 1
+          fi
+
+          # ABI preflight for the KSUN 3.3.0 dev-susfs driver. These functions
+          # are required by its sucompat path and were absent from fogos 1.5.5.
+          grep -q '#define SUSFS_VERSION "v2.2.0"' include/linux/susfs.h
+          grep -q 'susfs_is_current_proc_umounted(void)' include/linux/susfs_def.h
+          grep -q 'susfs_set_current_proc_umounted(void)' include/linux/susfs_def.h
+          grep -q 'CONFIG_KSU_SUSFS_SUS_MAP' fs/proc/task_mmu.c
+          grep -q 'obj-$(CONFIG_KSU_SUSFS).*susfs.o' fs/Makefile
+
+          echo 'Modern SUSFS kernel-side API:'
+          grep 'SUSFS_VERSION' include/linux/susfs.h
+
+      - name: Remove old embedded KSU
+        shell: bash
+        run: |
+          set -euo pipefail
+
           sed -i '/obj-$(CONFIG_KSU).*ksu\//d' drivers/staging/Makefile
           sed -i '\|source "drivers/staging/ksu/Kconfig"|d' drivers/staging/Kconfig
           rm -rf drivers/staging/ksu
@@ -216,22 +295,21 @@ jobs:
             -e KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG \
             -e KSU_SUSFS_OPEN_REDIRECT
 
-          # Only enable features actually implemented by the fogos SUSFS
-          # v1.5.5 kernel side. Do not invent v2.x-only symbols.
-          if grep -q '^config KSU_SUSFS_SUS_MAP' KernelSU-Next/kernel/Kconfig && \
-             grep -Rqs 'CONFIG_KSU_SUSFS_SUS_MAP' fs include mm; then
-            scripts/config --file "$OUT/.config" -e KSU_SUSFS_SUS_MAP
-          fi
+          # SUSFS 2.2.0 backport implements SUS_MAP on kernel 5.4, so all
+          # SUSFS features exposed by the pinned KSUN 3.3.0 Kconfig are enabled.
+          scripts/config --file "$OUT/.config" -e KSU_SUSFS_SUS_MAP
 
           make "${MAKE_ARGS[@]}" olddefconfig
 
           grep -q '^CONFIG_KPROBES=y' "$OUT/.config"
+          grep -q '^CONFIG_THREAD_INFO_IN_TASK=y' "$OUT/.config"
           grep -q '^CONFIG_KSU=y' "$OUT/.config"
           grep -q '^CONFIG_KSU_SUSFS=y' "$OUT/.config"
           grep -q '^CONFIG_KSU_SUSFS_SUS_MOUNT=y' "$OUT/.config"
           grep -q '^CONFIG_KSU_SUSFS_SUS_KSTAT=y' "$OUT/.config"
           grep -q '^CONFIG_KSU_SUSFS_SPOOF_UNAME=y' "$OUT/.config"
           grep -q '^CONFIG_KSU_SUSFS_OPEN_REDIRECT=y' "$OUT/.config"
+          grep -q '^CONFIG_KSU_SUSFS_SUS_MAP=y' "$OUT/.config"
 
           echo '=== final KSU/SUSFS config ==='
           grep -E '^CONFIG_(KSU|KPROBES)' "$OUT/.config" | sort
@@ -260,7 +338,28 @@ jobs:
             LLVM_IAS=1
           )
 
+          set +e
           make "${MAKE_ARGS[@]}" -j"$(nproc)" 2>&1 | tee build.log
+          BUILD_STATUS=${PIPESTATUS[0]}
+          set -e
+
+          if [ "$BUILD_STATUS" -ne 0 ]; then
+            grep -n -m 40 -E 'fatal error:|error:|undefined reference|implicit declaration|No rule to make target' \
+              build.log > first-errors.txt || true
+            {
+              echo '### Kernel compile failed'
+              echo
+              echo 'First compiler/linker errors:'
+              echo '```text'
+              if [ -s first-errors.txt ]; then
+                cat first-errors.txt
+              else
+                tail -n 120 build.log
+              fi
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit "$BUILD_STATUS"
+          fi
 
           test -s "$OUT/arch/arm64/boot/Image"
           test -s "$OUT/arch/arm64/boot/dtb.img"
@@ -390,7 +489,12 @@ jobs:
           name: fogos-build-diagnostics-r${{ github.run_number }}
           path: |
             build.log
+            first-errors.txt
+            susfs-patch-dry-run.log
+            susfs-patch.log
             out/.config
+            include/linux/susfs.h
+            include/linux/susfs_def.h
             KernelSU-Next/kernel/Kconfig
             KernelSU-Next/kernel/Kbuild
           if-no-files-found: ignore
