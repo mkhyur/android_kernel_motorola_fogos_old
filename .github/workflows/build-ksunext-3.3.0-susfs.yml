@@ -1,4 +1,4 @@
-name: Build fogos KSUN 3.3.0 + SUSFS 2.2.0 - V5
+name: Build fogos KSUN 3.3.0 + SUSFS 2.2.0 - V6
 
 on:
   workflow_dispatch:
@@ -19,7 +19,7 @@ env:
   SUSFS_PATCH_SHA: c25917a4f1c8c1475a8ba7c6f32e9f2bb2e31767
   SUSFS_PATCH_URL: https://raw.githubusercontent.com/JackA1ltman/NonGKI_Kernel_Build_2nd/c25917a4f1c8c1475a8ba7c6f32e9f2bb2e31767/Patches/Patch/susfs_patch_to_5.4.patch
   ZIP_PREFIX: Fogos-KSUNext-3.3.0-SUSFS-2.2.0
-  WORKFLOW_REV: v5-susfs220-backport-20260829
+  WORKFLOW_REV: v6-clean-susfs-migration-20260829
 
 jobs:
   build:
@@ -33,7 +33,7 @@ jobs:
           set -euo pipefail
           echo "WORKFLOW_REV=$WORKFLOW_REV"
           echo "This workflow removes fogos SUSFS 1.5.5 and applies a pinned SUSFS 2.2.0 Linux-5.4 backport. It DOES NOT apply the legacy KSU patch."
-          test "$WORKFLOW_REV" = "v5-susfs220-backport-20260829"
+          test "$WORKFLOW_REV" = "v6-clean-susfs-migration-20260829"
 
       - name: Checkout kernel
         uses: actions/checkout@v4
@@ -80,47 +80,69 @@ jobs:
           echo 'SUSFS:'
           grep 'SUSFS_VERSION' include/linux/susfs.h
 
-      - name: Remove old SUSFS 1.5.5 integration
+      - name: Remove old SUSFS integration cleanly
         shell: bash
         run: |
           set -euo pipefail
 
-          # This tree accumulated SUSFS in three effective stages:
-          #   34ac1e3 -> v1.3.5 (initial import)
-          #   150204b -> v1.5.3
-          #   192782b -> v1.5.5
-          # The intermediate v1.4.2 import was reverted in the repository, so
-          # there is nothing extra to undo for that version. Revert newest to
-          # oldest so the current kernel keeps all unrelated Motorola/LTS work.
-          SUSFS_COMMITS=(192782b 150204b 34ac1e3)
+          : > susfs-remove.log
+          : > old-susfs-leftovers.txt
 
-          for c in "${SUSFS_COMMITS[@]}"; do
+          # The fogos tree did not receive SUSFS in one atomic commit. It was
+          # imported as 1.3.5, later upgraded to 1.5.3, then to 1.5.5, with
+          # many unrelated kernel commits in between. A plain historical revert
+          # of all three commits conflicts after the first revert.
+          #
+          # 192782b is the current 1.5.5 -> 1.5.3 delta and reverts cleanly.
+          # For the older imports, use the reverse side only for overlapping
+          # hunks (-X theirs in a revert). Non-conflicting later kernel changes
+          # remain intact. drivers/staging/ksu is deleted later anyway.
+
+          for c in 192782b 150204b 34ac1e3; do
             git cat-file -e "$c^{commit}"
             git merge-base --is-ancestor "$c" HEAD
           done
 
-          for c in "${SUSFS_COMMITS[@]}"; do
-            echo "Reverting old SUSFS integration commit $c"
+          echo '=== revert 192782b (1.5.5 -> 1.5.3) ===' | tee -a susfs-remove.log
+          git -c user.name='GitHub Actions' -c user.email='actions@github.com' \
+            revert --no-commit 192782b 2>&1 | tee -a susfs-remove.log
+
+          grep -q '#define SUSFS_VERSION "v1.5.3"' include/linux/susfs.h
+
+          for c in 150204b 34ac1e3; do
+            echo "=== reverse old SUSFS import $c with conflict preference to pre-import side ===" | tee -a susfs-remove.log
             if ! git -c user.name='GitHub Actions' -c user.email='actions@github.com' \
-              revert --no-commit "$c"; then
-              echo "Old SUSFS revert failed at $c" >&2
-              git status --short >&2 || true
-              git diff --name-only --diff-filter=U >&2 || true
+              revert --no-commit -X theirs "$c" 2>&1 | tee -a susfs-remove.log; then
+              echo "Failed to reverse old SUSFS commit $c" | tee -a susfs-remove.log >&2
+              git status --short | tee -a susfs-remove.log >&2 || true
+              git diff --name-only --diff-filter=U | tee -a susfs-remove.log >&2 || true
               exit 1
             fi
           done
 
-          # Keep the reverse changes in the worktree, but do not leave the
-          # index staged; the modern patch is applied to this clean baseline.
+          # Leave changes only in the working tree; no synthetic commits are
+          # needed for the build.
           git reset
 
-          if [ -f include/linux/susfs.h ]; then
-            if grep -q 'SUSFS_VERSION' include/linux/susfs.h; then
-              echo 'Old SUSFS was not completely removed' >&2
-              grep 'SUSFS_VERSION' include/linux/susfs.h >&2 || true
-              exit 1
-            fi
+          # A clean pre-SUSFS baseline must not contain the imported SUSFS
+          # implementation or hook markers. Do not apply 2.2.0 on top of a
+          # partially removed 1.x tree.
+          {
+            git grep -n -I -E 'SUSFS_VERSION|CONFIG_KSU_SUSFS|susfs_[A-Za-z0-9_]*' -- \
+              fs include/linux kernel security/selinux ':!drivers/staging/ksu' || true
+          } > old-susfs-leftovers.txt
+
+          if [ -s old-susfs-leftovers.txt ]; then
+            echo 'Old SUSFS markers remain after cleanup:' >&2
+            head -n 120 old-susfs-leftovers.txt >&2
+            exit 1
           fi
+
+          test ! -e fs/susfs.c
+          test ! -e include/linux/susfs.h
+          test ! -e include/linux/susfs_def.h
+
+          echo 'Old SUSFS kernel-side integration removed cleanly.'
 
       - name: Apply pinned SUSFS 2.2.0 backport for Linux 5.4
         shell: bash
@@ -490,6 +512,8 @@ jobs:
           path: |
             build.log
             first-errors.txt
+            susfs-remove.log
+            old-susfs-leftovers.txt
             susfs-patch-dry-run.log
             susfs-patch.log
             out/.config
