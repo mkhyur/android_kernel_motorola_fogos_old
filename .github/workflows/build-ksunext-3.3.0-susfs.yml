@@ -1,42 +1,51 @@
-name: Build fogos - KernelSU Next 3.3.0 + SUSFS
+name: Build fogos KSUN 3.3.0 SUSFS - V3 NO LEGACY PATCH
 
 on:
   workflow_dispatch:
-  push:
-    branches:
-      - sixteen
-    paths-ignore:
-      - '**/*.md'
 
 permissions:
   contents: read
 
 env:
   ARCH: arm64
+  DEVICE: fogos
   DEFCONFIG: vendor/fogos_defconfig
   OUT: out
-  KSU_TAG: v3.3.0
-  SUSFS_BRANCH: kernel-5.4
+  KSU_REPO: https://github.com/pershoot/KernelSU-Next.git
+  # Known dev-susfs commit reported as tag v3.3.0 by WildKernels.
+  # Pinned so the build does not silently change in the future.
+  KSU_COMMIT: 26fded805206ae4542f4745e09cc465412994492
+  KSU_EXPECTED_TAG: v3.3.0
   ZIP_PREFIX: Fogos-KSUNext-3.3.0-SUSFS
+  WORKFLOW_REV: v3-no-legacy-patch-20260829
 
 jobs:
   build:
     runs-on: ubuntu-24.04
-    timeout-minutes: 120
+    timeout-minutes: 150
 
     steps:
+      - name: Workflow revision guard
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "WORKFLOW_REV=$WORKFLOW_REV"
+          echo "This workflow DOES NOT apply the legacy 10_enable_susfs_for_ksu.patch."
+          test "$WORKFLOW_REV" = "v3-no-legacy-patch-20260829"
+
       - name: Checkout kernel
         uses: actions/checkout@v4
         with:
           fetch-depth: 1
+          submodules: recursive
 
-      - name: Install build dependencies
+      - name: Install dependencies
         shell: bash
         run: |
           set -euo pipefail
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            bc bison build-essential ca-certificates ccache curl flex git \
+            bc bison build-essential ca-certificates ccache curl file flex git \
             libelf-dev libssl-dev lld llvm make python3 rsync unzip wget zip zstd
 
       - name: Fetch Neutron Clang 17
@@ -45,76 +54,110 @@ jobs:
           set -euo pipefail
           TC="$GITHUB_WORKSPACE/toolchain"
           mkdir -p "$TC"
-          URL="https://github.com/Neutron-Toolchains/clang-build-catalogue/releases/download/11032023/neutron-clang-11032023.tar.zst"
-          curl -fL --retry 5 --retry-delay 3 "$URL" -o /tmp/neutron-clang.tar.zst
+          curl -fL --retry 5 --retry-delay 3 \
+            'https://github.com/Neutron-Toolchains/clang-build-catalogue/releases/download/11032023/neutron-clang-11032023.tar.zst' \
+            -o /tmp/neutron-clang.tar.zst
           tar --use-compress-program=zstd -xf /tmp/neutron-clang.tar.zst -C "$TC"
           test -x "$TC/bin/clang"
           "$TC/bin/clang" --version
           echo "$TC/bin" >> "$GITHUB_PATH"
 
-      - name: Remove old embedded KernelSU driver
+      - name: Preflight fogos source
         shell: bash
         run: |
           set -euo pipefail
-
-          # This tree currently wires KSU through drivers/staging/ksu.
-          # Remove only that driver wiring; keep the already-patched SUSFS kernel-side code.
-          if [ -f drivers/staging/Makefile ]; then
-            sed -i '/obj-$(CONFIG_KSU).*ksu\//d' drivers/staging/Makefile
-          fi
-          if [ -f drivers/staging/Kconfig ]; then
-            sed -i '\|source "drivers/staging/ksu/Kconfig"|d' drivers/staging/Kconfig
-          fi
-          rm -rf drivers/staging/ksu
-
-      - name: Install exact KernelSU Next 3.3.0
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          git clone --depth=1 --branch "$KSU_TAG" \
-            https://github.com/KernelSU-Next/KernelSU-Next.git KernelSU-Next
-
-          test "$(git -C KernelSU-Next describe --tags --exact-match)" = "$KSU_TAG"
-          test -d KernelSU-Next/kernel
-
-          rm -rf drivers/kernelsu
-          cp -a KernelSU-Next/kernel drivers/kernelsu
-
-          grep -q 'source "drivers/kernelsu/Kconfig"' drivers/Kconfig || \
-            printf '\nsource "drivers/kernelsu/Kconfig"\n' >> drivers/Kconfig
-
-          grep -q 'kernelsu/' drivers/Makefile || \
-            printf '\nobj-$(CONFIG_KSU) += kernelsu/\n' >> drivers/Makefile
-
-      - name: Fetch SUSFS 5.4 integration patch
-        shell: bash
-        run: |
-          set -euo pipefail
-          git clone --depth=1 --branch "$SUSFS_BRANCH" \
-            https://gitlab.com/simonpunk/susfs4ksu.git susfs4ksu
-
-          test -f susfs4ksu/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch
+          test -f arch/arm64/configs/vendor/fogos_defconfig
           test -f include/linux/susfs.h
           test -f fs/susfs.c
+          grep -q '#define SUSFS_VERSION "v1.5.5"' include/linux/susfs.h
+          grep -q 'select HAVE_KPROBES' arch/arm64/Kconfig
+          grep -q 'obj-$(CONFIG_KSU)' drivers/staging/Makefile
 
-      - name: Patch KernelSU Next 3.3.0 for SUSFS
+          echo 'Kernel:'
+          make kernelversion
+          echo 'SUSFS:'
+          grep 'SUSFS_VERSION' include/linux/susfs.h
+
+      - name: Remove old embedded KSU only
         shell: bash
         run: |
           set -euo pipefail
 
-          cp susfs4ksu/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch \
-             drivers/kernelsu/10_enable_susfs_for_ksu.patch
+          # Keep all SUSFS kernel-side changes already present in fs/, mm/,
+          # include/ and security/. Remove only the old embedded KSU driver.
+          sed -i '/obj-$(CONFIG_KSU).*ksu\//d' drivers/staging/Makefile
+          sed -i '\|source "drivers/staging/ksu/Kconfig"|d' drivers/staging/Kconfig
+          rm -rf drivers/staging/ksu
 
-          cd drivers/kernelsu
-          patch --dry-run -p1 < 10_enable_susfs_for_ksu.patch
-          patch -p1 < 10_enable_susfs_for_ksu.patch
-          cd "$GITHUB_WORKSPACE"
+          ! grep -q 'obj-$(CONFIG_KSU).*ksu/' drivers/staging/Makefile
+          ! grep -q 'drivers/staging/ksu/Kconfig' drivers/staging/Kconfig
 
-          # Full SUSFS must be visible in the new KSU Kconfig after patching.
-          grep -q 'config KSU_SUSFS' drivers/kernelsu/Kconfig
+      - name: Install pinned KernelSU Next 3.3.0 SUSFS driver
+        shell: bash
+        run: |
+          set -euo pipefail
 
-      - name: Configure fogos + KernelSU Next + full SUSFS
+          rm -rf KernelSU-Next drivers/kernelsu
+          git clone --filter=blob:none "$KSU_REPO" KernelSU-Next
+          git -C KernelSU-Next checkout -B dev-susfs "$KSU_COMMIT"
+
+          ACTUAL_COMMIT="$(git -C KernelSU-Next rev-parse HEAD)"
+          ACTUAL_TAG="$(git -C KernelSU-Next describe --tags --abbrev=0 2>/dev/null || true)"
+
+          test "$ACTUAL_COMMIT" = "$KSU_COMMIT"
+          test "$ACTUAL_TAG" = "$KSU_EXPECTED_TAG"
+          test -f KernelSU-Next/kernel/Kconfig
+          test -f KernelSU-Next/kernel/Kbuild
+          grep -q '^config KSU_SUSFS' KernelSU-Next/kernel/Kconfig
+
+          # Keep KSUN as its own git repository. Kbuild uses this to calculate
+          # the real driver version instead of falling back to version 1.
+          ln -s ../KernelSU-Next/kernel drivers/kernelsu
+
+          grep -q 'obj-$(CONFIG_KSU) += kernelsu/' drivers/Makefile || \
+            printf '\nobj-$(CONFIG_KSU) += kernelsu/\n' >> drivers/Makefile
+
+          if ! grep -q 'source "drivers/kernelsu/Kconfig"' drivers/Kconfig; then
+            sed -i '/endmenu/i\source "drivers/kernelsu/Kconfig"' drivers/Kconfig
+          fi
+
+          test -L drivers/kernelsu
+          test "$(readlink -f drivers/kernelsu)" = "$GITHUB_WORKSPACE/KernelSU-Next/kernel"
+
+          echo "KSUN commit: $ACTUAL_COMMIT"
+          echo "KSUN tag:    $ACTUAL_TAG"
+
+      - name: Add Linux 5.4 compatibility to KSUN
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          KSU=KernelSU-Next/kernel
+
+          # Linux 5.4 task_work_add() takes a boolean notify argument.
+          # Newer kernels use enum task_work_notify_mode / TWA_RESUME.
+          # For 5.4, true is the semantic equivalent of TWA_RESUME.
+          mapfile -t twa_files < <(grep -RIl --include='*.c' --include='*.h' 'TWA_RESUME' "$KSU" || true)
+          for f in "${twa_files[@]}"; do
+            sed -i 's/TWA_RESUME/true/g' "$f"
+          done
+
+          if grep -Rqs --include='*.c' 'put_task_struct' "$KSU"; then
+            while IFS= read -r f; do
+              if ! grep -q '#include <linux/sched/task.h>' "$f"; then
+                sed -i '1i#include <linux/sched/task.h>' "$f"
+              fi
+            done < <(grep -RIl --include='*.c' 'put_task_struct' "$KSU")
+          fi
+
+          ! grep -Rqs --include='*.c' --include='*.h' 'TWA_RESUME' "$KSU"
+
+          # Ensure the kernel itself has the old boolean task_work API before
+          # applying the compatibility transformation above.
+          grep -Eq 'task_work_add\([^;]*bool' include/linux/task_work.h || \
+            grep -q 'bool notify' include/linux/task_work.h
+
+      - name: Configure fogos + KSUN + SUSFS
         shell: bash
         run: |
           set -euo pipefail
@@ -123,86 +166,179 @@ jobs:
           rm -rf "$OUT"
           mkdir -p "$OUT"
 
-          make O="$OUT" ARCH=arm64 LLVM=1 LLVM_IAS=1 "$DEFCONFIG"
+          MAKE_ARGS=(
+            O="$OUT"
+            ARCH=arm64
+            CC=clang
+            LD="$GITHUB_WORKSPACE/toolchain/bin/ld.lld"
+            AR="$GITHUB_WORKSPACE/toolchain/bin/llvm-ar"
+            NM="$GITHUB_WORKSPACE/toolchain/bin/llvm-nm"
+            AS="$GITHUB_WORKSPACE/toolchain/bin/llvm-as"
+            OBJCOPY="$GITHUB_WORKSPACE/toolchain/bin/llvm-objcopy"
+            OBJDUMP="$GITHUB_WORKSPACE/toolchain/bin/llvm-objdump"
+            READELF="$GITHUB_WORKSPACE/toolchain/bin/llvm-readelf"
+            STRIP="$GITHUB_WORKSPACE/toolchain/bin/llvm-strip"
+            LLVM=1
+            LLVM_IAS=1
+          )
 
+          # Reproduce the original fogos build sequence.
+          make "${MAKE_ARGS[@]}" "$DEFCONFIG" moto.config
+
+          # KSUN 3.3.0 needs KPROBES on this branch. ARM64 in this tree selects
+          # HAVE_KPROBES, so enabling KPROBES is valid even though the vendor
+          # defconfig explicitly leaves it disabled.
           scripts/config --file "$OUT/.config" \
+            -e KPROBES \
+            -e KALLSYMS \
             -e KSU \
             -e KSU_SUSFS \
             -e KSU_SUSFS_SUS_PATH \
             -e KSU_SUSFS_SUS_MOUNT \
             -e KSU_SUSFS_SUS_KSTAT \
-            -e KSU_SUSFS_TRY_UMOUNT \
             -e KSU_SUSFS_SPOOF_UNAME \
             -e KSU_SUSFS_ENABLE_LOG \
-            -e KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS
+            -e KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS \
+            -e KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG \
+            -e KSU_SUSFS_OPEN_REDIRECT
 
-          # Magic Mount integration when the SUSFS patch exposes it.
-          if grep -q '^config KSU_SUSFS_HAS_MAGIC_MOUNT' drivers/kernelsu/Kconfig; then
-            scripts/config --file "$OUT/.config" -e KSU_SUSFS_HAS_MAGIC_MOUNT
+          # Only enable features actually implemented by the fogos SUSFS
+          # v1.5.5 kernel side. Do not invent v2.x-only symbols.
+          if grep -q '^config KSU_SUSFS_SUS_MAP' KernelSU-Next/kernel/Kconfig && \
+             grep -Rqs 'CONFIG_KSU_SUSFS_SUS_MAP' fs include mm; then
+            scripts/config --file "$OUT/.config" -e KSU_SUSFS_SUS_MAP
           fi
 
-          # Enable AUTO_ADD options when present in this SUSFS revision.
-          for sym in \
-            KSU_SUSFS_AUTO_ADD_SUS_KSU_DEFAULT_MOUNT \
-            KSU_SUSFS_AUTO_ADD_SUS_BIND_MOUNT \
-            KSU_SUSFS_AUTO_ADD_TRY_UMOUNT_FOR_BIND_MOUNT \
-            KSU_SUSFS_SUS_SU; do
-            if grep -q "^config ${sym#KSU_}" drivers/kernelsu/Kconfig || grep -q "^config $sym" drivers/kernelsu/Kconfig; then
-              scripts/config --file "$OUT/.config" -e "$sym"
-            fi
-          done
+          make "${MAKE_ARGS[@]}" olddefconfig
 
-          make O="$OUT" ARCH=arm64 LLVM=1 LLVM_IAS=1 olddefconfig
-
+          grep -q '^CONFIG_KPROBES=y' "$OUT/.config"
           grep -q '^CONFIG_KSU=y' "$OUT/.config"
           grep -q '^CONFIG_KSU_SUSFS=y' "$OUT/.config"
-          grep -q '^CONFIG_KSU_SUSFS_SUS_PATH=y' "$OUT/.config"
           grep -q '^CONFIG_KSU_SUSFS_SUS_MOUNT=y' "$OUT/.config"
           grep -q '^CONFIG_KSU_SUSFS_SUS_KSTAT=y' "$OUT/.config"
-          grep -q '^CONFIG_KSU_SUSFS_TRY_UMOUNT=y' "$OUT/.config"
+          grep -q '^CONFIG_KSU_SUSFS_SPOOF_UNAME=y' "$OUT/.config"
+          grep -q '^CONFIG_KSU_SUSFS_OPEN_REDIRECT=y' "$OUT/.config"
 
-      - name: Compile kernel
+          echo '=== final KSU/SUSFS config ==='
+          grep -E '^CONFIG_(KSU|KPROBES)' "$OUT/.config" | sort
+
+      - name: Compile kernel and modules
         shell: bash
         run: |
           set -euo pipefail
           export PATH="$GITHUB_WORKSPACE/toolchain/bin:$PATH"
-          export KBUILD_BUILD_USER=github-actions
-          export KBUILD_BUILD_HOST=ubuntu
+          export KBUILD_BUILD_USER=Moe
+          export KBUILD_BUILD_HOST=Nyan
 
-          make O="$OUT" ARCH=arm64 LLVM=1 LLVM_IAS=1 -j"$(nproc)" 2>&1 | tee build.log
+          MAKE_ARGS=(
+            O="$OUT"
+            ARCH=arm64
+            CC=clang
+            LD="$GITHUB_WORKSPACE/toolchain/bin/ld.lld"
+            AR="$GITHUB_WORKSPACE/toolchain/bin/llvm-ar"
+            NM="$GITHUB_WORKSPACE/toolchain/bin/llvm-nm"
+            AS="$GITHUB_WORKSPACE/toolchain/bin/llvm-as"
+            OBJCOPY="$GITHUB_WORKSPACE/toolchain/bin/llvm-objcopy"
+            OBJDUMP="$GITHUB_WORKSPACE/toolchain/bin/llvm-objdump"
+            READELF="$GITHUB_WORKSPACE/toolchain/bin/llvm-readelf"
+            STRIP="$GITHUB_WORKSPACE/toolchain/bin/llvm-strip"
+            LLVM=1
+            LLVM_IAS=1
+          )
+
+          make "${MAKE_ARGS[@]}" -j"$(nproc)" 2>&1 | tee build.log
 
           test -s "$OUT/arch/arm64/boot/Image"
           test -s "$OUT/arch/arm64/boot/dtb.img"
           test -s "$OUT/arch/arm64/boot/dtbo.img"
 
-      - name: Verify resulting kernel config
-        shell: bash
-        run: |
-          set -euo pipefail
-          echo '=== KernelSU / SUSFS config ==='
-          grep -E '^CONFIG_KSU(=|_)' "$OUT/.config" | sort
+          rm -rf "$OUT/modules"
+          make "${MAKE_ARGS[@]}" -j"$(nproc)" \
+            INSTALL_MOD_PATH=modules INSTALL_MOD_STRIP=1 modules_install \
+            2>&1 | tee -a build.log
 
-          grep -q '^CONFIG_KSU=y' "$OUT/.config"
-          grep -q '^CONFIG_KSU_SUSFS=y' "$OUT/.config"
+          test -d "$OUT/modules/lib/modules"
+          find "$OUT/modules/lib/modules" -name '*.ko' -print -quit | grep -q .
 
-          # Ensure the old embedded driver is not being built.
-          test ! -d drivers/staging/ksu
-          grep -q 'obj-$(CONFIG_KSU) += kernelsu/' drivers/Makefile
-
-      - name: Build flashable AnyKernel3 ZIP
+      - name: Verify KSUN identity in build log
         shell: bash
         run: |
           set -euo pipefail
 
-          rm -rf AnyKernel3
-          git clone --depth=1 --branch fogos https://github.com/SushiKernel/AnyKernel3.git AnyKernel3
+          grep -q 'KernelSU-Next Git repo detected' build.log
+          grep -q 'KernelSU-Next tag: v3.3.0' build.log
 
+          KSU_VERSION="$(grep -m1 -oE 'KernelSU-Next version: [0-9]+' build.log | awk '{print $3}')"
+          test -n "$KSU_VERSION"
+          test "$KSU_VERSION" -ge 33214
+
+          echo "KSU_VERSION=$KSU_VERSION" >> "$GITHUB_ENV"
+          echo "Detected KSUN driver version: $KSU_VERSION"
+
+      - name: Prepare AnyKernel3 and vendor modules
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          rm -rf AnyKernel3 fogos-device
+          git clone --depth=1 --branch fogos \
+            https://github.com/MoeKernel/AnyKernel3.git AnyKernel3
+
+          MODPATH=AnyKernel3/modules/vendor/lib/modules
+          mkdir -p "$MODPATH"
+
+          cp "$OUT/.config" AnyKernel3/config
           cp "$OUT/arch/arm64/boot/Image" AnyKernel3/Image
           cp "$OUT/arch/arm64/boot/dtb.img" AnyKernel3/dtb
           cp "$OUT/arch/arm64/boot/dtbo.img" AnyKernel3/dtbo.img
-          cp "$OUT/.config" AnyKernel3/config
 
-          ZIP_NAME="${ZIP_PREFIX}-${GITHUB_RUN_NUMBER}.zip"
+          MODROOT="$(find "$OUT/modules/lib/modules" -mindepth 1 -maxdepth 1 -type d | head -n1)"
+          test -n "$MODROOT"
+
+          find "$MODROOT" -type f -name '*.ko' -exec cp -f {} "$MODPATH/" \;
+          cp "$MODROOT/modules.alias" "$MODPATH/modules.alias"
+          cp "$MODROOT/modules.dep" "$MODPATH/modules.dep"
+          cp "$MODROOT/modules.softdep" "$MODPATH/modules.softdep"
+          cp "$MODROOT/modules.order" "$MODPATH/modules.load"
+
+          sed -i 's#\(kernel/[^: ]*/\)\([^: ]*\.ko\)#/vendor/lib/modules/\2#g' "$MODPATH/modules.dep"
+          sed -i 's#.*/##; s/\.ko$//' "$MODPATH/modules.load"
+
+          # Prefer the same build.sta metadata used by the original source.
+          if [ -f "build.sta/${DEVICE}_modules.blocklist" ]; then
+            cp "build.sta/${DEVICE}_modules.blocklist" "$MODPATH/modules.blocklist"
+          else
+            # Fallback to the public fogos device tree when build.sta metadata
+            # is absent in this fork.
+            git clone --depth=1 --branch sixteen \
+              https://github.com/Motorola-SM6375-Devs/android_device_motorola_fogos.git fogos-device
+            cp fogos-device/modules.blocklist "$MODPATH/modules.blocklist"
+          fi
+
+          if [ -f "build.sta/${DEVICE}_mdconf" ]; then
+            # shellcheck disable=SC1090
+            source "build.sta/${DEVICE}_mdconf"
+            for module_pattern in "${modules_to_nuke[@]:-}"; do
+              grep -vE "$module_pattern" "$MODPATH/modules.load" > /tmp/modules.load || true
+              mv /tmp/modules.load "$MODPATH/modules.load"
+            done
+          elif [ -f fogos-device/modules.load ]; then
+            # Device-tree modules.load is authoritative if no mdconf exists.
+            cp fogos-device/modules.load "$MODPATH/modules.load.device"
+          fi
+
+          test -s AnyKernel3/Image
+          test -s AnyKernel3/dtb
+          test -s AnyKernel3/dtbo.img
+          find "$MODPATH" -name '*.ko' -print -quit | grep -q .
+
+      - name: Build and audit flashable ZIP
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          ZIP_NAME="${ZIP_PREFIX}-${KSU_VERSION}-r${GITHUB_RUN_NUMBER}.zip"
+
           (
             cd AnyKernel3
             zip -r9 "../$ZIP_NAME" . \
@@ -211,26 +347,36 @@ jobs:
 
           test -s "$ZIP_NAME"
           unzip -t "$ZIP_NAME"
-          unzip -l "$ZIP_NAME" | grep -q ' Image$'
-          unzip -l "$ZIP_NAME" | grep -q ' dtb$'
-          unzip -l "$ZIP_NAME" | grep -q ' dtbo.img$'
+
+          unzip -l "$ZIP_NAME" | grep -qE '[[:space:]]Image$'
+          unzip -l "$ZIP_NAME" | grep -qE '[[:space:]]dtb$'
+          unzip -l "$ZIP_NAME" | grep -qE '[[:space:]]dtbo.img$'
+          unzip -l "$ZIP_NAME" | grep -q 'modules/vendor/lib/modules/.*\.ko'
+          unzip -l "$ZIP_NAME" | grep -q 'modules/vendor/lib/modules/modules.dep'
+          unzip -l "$ZIP_NAME" | grep -q 'modules/vendor/lib/modules/modules.load'
+
+          sha256sum "$ZIP_NAME" | tee "$ZIP_NAME.sha256"
 
           echo "ZIP_NAME=$ZIP_NAME" >> "$GITHUB_ENV"
 
       - name: Upload flashable ZIP
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ env.ZIP_PREFIX }}-${{ github.run_number }}
-          path: ${{ env.ZIP_NAME }}
+          name: ${{ env.ZIP_PREFIX }}-${{ env.KSU_VERSION }}-r${{ github.run_number }}
+          path: |
+            ${{ env.ZIP_NAME }}
+            ${{ env.ZIP_NAME }}.sha256
           if-no-files-found: error
           compression-level: 0
 
-      - name: Upload build log on failure
+      - name: Upload diagnostics on failure
         if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: build-log-${{ github.run_number }}
+          name: fogos-build-diagnostics-r${{ github.run_number }}
           path: |
             build.log
             out/.config
+            KernelSU-Next/kernel/Kconfig
+            KernelSU-Next/kernel/Kbuild
           if-no-files-found: ignore
