@@ -1,0 +1,236 @@
+name: Build fogos - KernelSU Next 3.3.0 + SUSFS
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - sixteen
+    paths-ignore:
+      - '**/*.md'
+
+permissions:
+  contents: read
+
+env:
+  ARCH: arm64
+  DEFCONFIG: vendor/fogos_defconfig
+  OUT: out
+  KSU_TAG: v3.3.0
+  SUSFS_BRANCH: kernel-5.4
+  ZIP_PREFIX: Fogos-KSUNext-3.3.0-SUSFS
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+
+    steps:
+      - name: Checkout kernel
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Install build dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            bc bison build-essential ca-certificates ccache curl flex git \
+            libelf-dev libssl-dev lld llvm make python3 rsync unzip wget zip zstd
+
+      - name: Fetch Neutron Clang 17
+        shell: bash
+        run: |
+          set -euo pipefail
+          TC="$GITHUB_WORKSPACE/toolchain"
+          mkdir -p "$TC"
+          URL="https://github.com/Neutron-Toolchains/clang-build-catalogue/releases/download/11032023/neutron-clang-11032023.tar.zst"
+          curl -fL --retry 5 --retry-delay 3 "$URL" -o /tmp/neutron-clang.tar.zst
+          tar --use-compress-program=zstd -xf /tmp/neutron-clang.tar.zst -C "$TC"
+          test -x "$TC/bin/clang"
+          "$TC/bin/clang" --version
+          echo "$TC/bin" >> "$GITHUB_PATH"
+
+      - name: Remove old embedded KernelSU driver
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          # This tree currently wires KSU through drivers/staging/ksu.
+          # Remove only that driver wiring; keep the already-patched SUSFS kernel-side code.
+          if [ -f drivers/staging/Makefile ]; then
+            sed -i '/obj-$(CONFIG_KSU).*ksu\//d' drivers/staging/Makefile
+          fi
+          if [ -f drivers/staging/Kconfig ]; then
+            sed -i '\|source "drivers/staging/ksu/Kconfig"|d' drivers/staging/Kconfig
+          fi
+          rm -rf drivers/staging/ksu
+
+      - name: Install exact KernelSU Next 3.3.0
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          git clone --depth=1 --branch "$KSU_TAG" \
+            https://github.com/KernelSU-Next/KernelSU-Next.git KernelSU-Next
+
+          test "$(git -C KernelSU-Next describe --tags --exact-match)" = "$KSU_TAG"
+          test -d KernelSU-Next/kernel
+
+          rm -rf drivers/kernelsu
+          cp -a KernelSU-Next/kernel drivers/kernelsu
+
+          grep -q 'source "drivers/kernelsu/Kconfig"' drivers/Kconfig || \
+            printf '\nsource "drivers/kernelsu/Kconfig"\n' >> drivers/Kconfig
+
+          grep -q 'kernelsu/' drivers/Makefile || \
+            printf '\nobj-$(CONFIG_KSU) += kernelsu/\n' >> drivers/Makefile
+
+      - name: Fetch SUSFS 5.4 integration patch
+        shell: bash
+        run: |
+          set -euo pipefail
+          git clone --depth=1 --branch "$SUSFS_BRANCH" \
+            https://gitlab.com/simonpunk/susfs4ksu.git susfs4ksu
+
+          test -f susfs4ksu/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch
+          test -f include/linux/susfs.h
+          test -f fs/susfs.c
+
+      - name: Patch KernelSU Next 3.3.0 for SUSFS
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          cp susfs4ksu/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch \
+             drivers/kernelsu/10_enable_susfs_for_ksu.patch
+
+          cd drivers/kernelsu
+          patch --dry-run -p1 < 10_enable_susfs_for_ksu.patch
+          patch -p1 < 10_enable_susfs_for_ksu.patch
+          cd "$GITHUB_WORKSPACE"
+
+          # Full SUSFS must be visible in the new KSU Kconfig after patching.
+          grep -q 'config KSU_SUSFS' drivers/kernelsu/Kconfig
+
+      - name: Configure fogos + KernelSU Next + full SUSFS
+        shell: bash
+        run: |
+          set -euo pipefail
+          export PATH="$GITHUB_WORKSPACE/toolchain/bin:$PATH"
+
+          rm -rf "$OUT"
+          mkdir -p "$OUT"
+
+          make O="$OUT" ARCH=arm64 LLVM=1 LLVM_IAS=1 "$DEFCONFIG"
+
+          scripts/config --file "$OUT/.config" \
+            -e KSU \
+            -e KSU_SUSFS \
+            -e KSU_SUSFS_SUS_PATH \
+            -e KSU_SUSFS_SUS_MOUNT \
+            -e KSU_SUSFS_SUS_KSTAT \
+            -e KSU_SUSFS_TRY_UMOUNT \
+            -e KSU_SUSFS_SPOOF_UNAME \
+            -e KSU_SUSFS_ENABLE_LOG \
+            -e KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS
+
+          # Magic Mount integration when the SUSFS patch exposes it.
+          if grep -q '^config KSU_SUSFS_HAS_MAGIC_MOUNT' drivers/kernelsu/Kconfig; then
+            scripts/config --file "$OUT/.config" -e KSU_SUSFS_HAS_MAGIC_MOUNT
+          fi
+
+          # Enable AUTO_ADD options when present in this SUSFS revision.
+          for sym in \
+            KSU_SUSFS_AUTO_ADD_SUS_KSU_DEFAULT_MOUNT \
+            KSU_SUSFS_AUTO_ADD_SUS_BIND_MOUNT \
+            KSU_SUSFS_AUTO_ADD_TRY_UMOUNT_FOR_BIND_MOUNT \
+            KSU_SUSFS_SUS_SU; do
+            if grep -q "^config ${sym#KSU_}" drivers/kernelsu/Kconfig || grep -q "^config $sym" drivers/kernelsu/Kconfig; then
+              scripts/config --file "$OUT/.config" -e "$sym"
+            fi
+          done
+
+          make O="$OUT" ARCH=arm64 LLVM=1 LLVM_IAS=1 olddefconfig
+
+          grep -q '^CONFIG_KSU=y' "$OUT/.config"
+          grep -q '^CONFIG_KSU_SUSFS=y' "$OUT/.config"
+          grep -q '^CONFIG_KSU_SUSFS_SUS_PATH=y' "$OUT/.config"
+          grep -q '^CONFIG_KSU_SUSFS_SUS_MOUNT=y' "$OUT/.config"
+          grep -q '^CONFIG_KSU_SUSFS_SUS_KSTAT=y' "$OUT/.config"
+          grep -q '^CONFIG_KSU_SUSFS_TRY_UMOUNT=y' "$OUT/.config"
+
+      - name: Compile kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+          export PATH="$GITHUB_WORKSPACE/toolchain/bin:$PATH"
+          export KBUILD_BUILD_USER=github-actions
+          export KBUILD_BUILD_HOST=ubuntu
+
+          make O="$OUT" ARCH=arm64 LLVM=1 LLVM_IAS=1 -j"$(nproc)" 2>&1 | tee build.log
+
+          test -s "$OUT/arch/arm64/boot/Image"
+          test -s "$OUT/arch/arm64/boot/dtb.img"
+          test -s "$OUT/arch/arm64/boot/dtbo.img"
+
+      - name: Verify resulting kernel config
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo '=== KernelSU / SUSFS config ==='
+          grep -E '^CONFIG_KSU(=|_)' "$OUT/.config" | sort
+
+          grep -q '^CONFIG_KSU=y' "$OUT/.config"
+          grep -q '^CONFIG_KSU_SUSFS=y' "$OUT/.config"
+
+          # Ensure the old embedded driver is not being built.
+          test ! -d drivers/staging/ksu
+          grep -q 'obj-$(CONFIG_KSU) += kernelsu/' drivers/Makefile
+
+      - name: Build flashable AnyKernel3 ZIP
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          rm -rf AnyKernel3
+          git clone --depth=1 --branch fogos https://github.com/SushiKernel/AnyKernel3.git AnyKernel3
+
+          cp "$OUT/arch/arm64/boot/Image" AnyKernel3/Image
+          cp "$OUT/arch/arm64/boot/dtb.img" AnyKernel3/dtb
+          cp "$OUT/arch/arm64/boot/dtbo.img" AnyKernel3/dtbo.img
+          cp "$OUT/.config" AnyKernel3/config
+
+          ZIP_NAME="${ZIP_PREFIX}-${GITHUB_RUN_NUMBER}.zip"
+          (
+            cd AnyKernel3
+            zip -r9 "../$ZIP_NAME" . \
+              -x '.git/*' 'README.md' '*placeholder*'
+          )
+
+          test -s "$ZIP_NAME"
+          unzip -t "$ZIP_NAME"
+          unzip -l "$ZIP_NAME" | grep -q ' Image$'
+          unzip -l "$ZIP_NAME" | grep -q ' dtb$'
+          unzip -l "$ZIP_NAME" | grep -q ' dtbo.img$'
+
+          echo "ZIP_NAME=$ZIP_NAME" >> "$GITHUB_ENV"
+
+      - name: Upload flashable ZIP
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.ZIP_PREFIX }}-${{ github.run_number }}
+          path: ${{ env.ZIP_NAME }}
+          if-no-files-found: error
+          compression-level: 0
+
+      - name: Upload build log on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-log-${{ github.run_number }}
+          path: |
+            build.log
+            out/.config
+          if-no-files-found: ignore
