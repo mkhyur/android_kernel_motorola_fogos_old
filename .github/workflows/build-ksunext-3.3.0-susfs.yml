@@ -1,4 +1,4 @@
-name: Build fogos KSUN 3.3.0 SUSFS - V3 NO LEGACY PATCH
+name: Build fogos KSUN 3.3.0 SUSFS - V4 Linux 5.4 fixes
 
 on:
   workflow_dispatch:
@@ -17,7 +17,7 @@ env:
   KSU_COMMIT: 26fded805206ae4542f4745e09cc465412994492
   KSU_EXPECTED_TAG: v3.3.0
   ZIP_PREFIX: Fogos-KSUNext-3.3.0-SUSFS
-  WORKFLOW_REV: v3-no-legacy-patch-20260829
+  WORKFLOW_REV: v4-sulog-init-fix-20260829
 
 jobs:
   build:
@@ -31,7 +31,7 @@ jobs:
           set -euo pipefail
           echo "WORKFLOW_REV=$WORKFLOW_REV"
           echo "This workflow DOES NOT apply the legacy 10_enable_susfs_for_ksu.patch."
-          test "$WORKFLOW_REV" = "v3-no-legacy-patch-20260829"
+          test "$WORKFLOW_REV" = "v4-sulog-init-fix-20260829"
 
       - name: Checkout kernel
         uses: actions/checkout@v4
@@ -151,6 +151,20 @@ jobs:
           fi
 
           ! grep -Rqs --include='*.c' --include='*.h' 'TWA_RESUME' "$KSU"
+
+          # KSUN v3.3.0/dev-susfs pinned commit uses __init/__exit in
+          # feature/sulog.h without directly including linux/init.h. Older
+          # kernels such as this 5.4 tree do not provide those macros through
+          # the existing include chain, which causes:
+          #   variable has incomplete type 'void'
+          #   expected ';' after top level declarator
+          # Upstream later fixed the same issue by adding linux/init.h.
+          SULOG_H="$KSU/feature/sulog.h"
+          test -f "$SULOG_H"
+          if ! grep -q '^#include <linux/init.h>$' "$SULOG_H"; then
+            sed -i '/^#include <linux\/types.h>$/a #include <linux/init.h>' "$SULOG_H"
+          fi
+          grep -q '^#include <linux/init.h>$' "$SULOG_H"
 
           # Ensure the kernel itself has the old boolean task_work API before
           # applying the compatibility transformation above.
